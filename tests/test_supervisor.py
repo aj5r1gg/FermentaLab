@@ -144,6 +144,99 @@ class TestSupervisoryController(unittest.TestCase):
         self.assert_off(decision)
         self.assertEqual(self.supervisor.state, SupervisorState.FAULT)
 
+    def test_fault_status_requires_latched_fault(self):
+        with self.assertRaises(RuntimeError):
+            self.supervisor.fault_status()
+
+        self.activate()
+
+        with self.assertRaises(RuntimeError):
+            self.supervisor.fault_status()
+
+    def test_fault_status_reports_latched_fault(self):
+        self.activate()
+        self.evaluate(measured_at=90.0)
+
+        result = self.supervisor.fault_status()
+
+        self.assertEqual(
+            result.state,
+            SupervisorState.FAULT,
+        )
+        self.assertFalse(result.heating_permitted)
+        self.assertFalse(result.cooling_permitted)
+
+    def test_fault_status_preserves_reason(self):
+        self.activate()
+        self.evaluate(measured_at=90.0)
+
+        original_reason = self.supervisor.fault_reason
+
+        result = self.supervisor.fault_status()
+
+        self.assertEqual(result.reason, original_reason)
+        self.assertEqual(
+            self.supervisor.fault_reason,
+            original_reason,
+        )
+
+    def test_fault_status_preserves_authority_generation(self):
+        self.activate()
+        self.evaluate(measured_at=90.0)
+
+        generation = self.supervisor.authority_generation
+
+        self.supervisor.fault_status()
+
+        self.assertEqual(
+            self.supervisor.authority_generation,
+            generation,
+        )
+
+    def test_fault_status_preserves_timestamps(self):
+        self.activate()
+        self.evaluate(measured_at=90.0)
+
+        before = (
+            self.supervisor._last_now_s,
+            self.supervisor._last_heartbeat_s,
+            self.supervisor._last_measurement_s,
+        )
+
+        self.supervisor.fault_status()
+
+        after = (
+            self.supervisor._last_now_s,
+            self.supervisor._last_heartbeat_s,
+            self.supervisor._last_measurement_s,
+        )
+
+        self.assertEqual(after, before)
+
+    def test_fault_status_is_repeatable(self):
+        self.activate()
+        self.evaluate(measured_at=90.0)
+
+        generation = self.supervisor.authority_generation
+        reason = self.supervisor.fault_reason
+
+        first = self.supervisor.fault_status()
+        second = self.supervisor.fault_status()
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            self.supervisor.state,
+            SupervisorState.FAULT,
+        )
+        self.assertEqual(
+            self.supervisor.authority_generation,
+            generation,
+        )
+        self.assertEqual(
+            self.supervisor.fault_reason,
+            reason,
+        )
+
     def test_fault_requires_explicit_clearance(self):
         self.activate()
         self.evaluate(measured_at=90.0)

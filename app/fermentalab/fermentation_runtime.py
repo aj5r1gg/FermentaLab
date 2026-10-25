@@ -264,9 +264,7 @@ class FermentationRuntime:
         ):
             self._state = RuntimeState.FAULT
 
-            decision = self.supervisor.heartbeat(
-                now_s=float("nan"),
-            )
+            decision = self.supervisor.fault_status()
 
             return self._result(
                 stage=None,

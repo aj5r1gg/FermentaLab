@@ -258,6 +258,22 @@ class SupervisoryController:
         self._last_measurement_s = None
         return self._off("supervisor inhibited")
 
+    def fault_status(self) -> SupervisorDecision:
+        """
+        Report an existing latched fault without changing state.
+
+        This operation does not clear the fault, renew the watchdog,
+        grant authority, or alter monotonic timestamps.
+        """
+        if self._state != SupervisorState.FAULT:
+            raise RuntimeError(
+                "supervisor has no latched fault"
+            )
+
+        return self._off(
+            self._fault_reason or "supervisory fault latched"
+        )
+
     def clear_fault(self) -> SupervisorDecision:
         if self._state != SupervisorState.FAULT:
             return self._off("no latched fault")

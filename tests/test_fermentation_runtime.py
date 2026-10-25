@@ -265,6 +265,79 @@ class TestFermentationRuntime(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.runtime.start(now_s=112.0)
 
+    def test_repeated_inhibit_preserves_latched_fault(self):
+        self.runtime.start(now_s=100.0)
+
+        self.runtime.heartbeat(now_s=111.0)
+
+        supervisor = self.runtime.supervisor
+
+        self.assertEqual(
+            self.runtime.state,
+            RuntimeState.FAULT,
+        )
+        self.assertEqual(
+            supervisor.state.value,
+            "fault",
+        )
+
+        original_reason = supervisor.fault_reason
+        original_generation = supervisor.authority_generation
+
+        original_timestamps = (
+            supervisor._last_now_s,
+            supervisor._last_heartbeat_s,
+            supervisor._last_measurement_s,
+        )
+
+        first = self.runtime.inhibit()
+        second = self.runtime.inhibit()
+
+        self.assertEqual(first.state, RuntimeState.FAULT)
+        self.assertEqual(second.state, RuntimeState.FAULT)
+
+        self.assertEqual(
+            supervisor.state.value,
+            "fault",
+        )
+
+        self.assertEqual(
+            supervisor.fault_reason,
+            original_reason,
+        )
+
+        self.assertEqual(
+            supervisor.authority_generation,
+            original_generation,
+        )
+
+        current_timestamps = (
+            supervisor._last_now_s,
+            supervisor._last_heartbeat_s,
+            supervisor._last_measurement_s,
+        )
+
+        self.assertEqual(
+            current_timestamps,
+            original_timestamps,
+        )
+
+        for decision in (first, second):
+            self.assertFalse(decision.heating_permitted)
+            self.assertFalse(decision.cooling_permitted)
+            self.assertEqual(
+                decision.supervisor.reason,
+                original_reason,
+            )
+
+        with self.assertRaises(RuntimeError):
+            self.runtime.start(now_s=112.0)
+
+        self.assertEqual(
+            supervisor.authority_generation,
+            original_generation,
+        )
+
     def test_explicit_fault_clearance_requires_restart(self):
         self.runtime.start(now_s=100.0)
 
