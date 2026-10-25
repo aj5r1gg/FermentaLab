@@ -7,6 +7,8 @@ No physical hardware control.
 """
 
 import argparse
+import csv
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -74,6 +76,13 @@ def build_parser():
         help="Simulation timestep in seconds (maximum 5)",
     )
 
+    simulate.add_argument(
+        "--csv",
+        type=Path,
+        default=None,
+        help="Export simulation samples to a new CSV file",
+    )
+
     return parser
 
 
@@ -107,6 +116,55 @@ def list_recipes(store):
     return 0
 
 
+def export_csv(result, destination):
+    destination = Path(destination)
+
+    # Exclusive creation prevents accidental overwriting.
+    # The destination directory must already exist.
+    created = False
+
+    try:
+        with destination.open(
+            "x",
+            encoding="utf-8",
+            newline="",
+        ) as output:
+            created = True
+
+            writer = csv.writer(output)
+
+            writer.writerow([
+                "elapsed_s",
+                "ambient_c",
+                "chamber_c",
+                "vessel_c",
+                "food_c",
+                "progress_percent",
+                "heating_permitted",
+                "cooling_permitted",
+            ])
+
+            for sample in result.samples:
+                writer.writerow([
+                    sample.elapsed_s,
+                    sample.ambient_c,
+                    sample.chamber_c,
+                    sample.vessel_c,
+                    sample.food_c,
+                    sample.progress_percent,
+                    int(sample.heating_permitted),
+                    int(sample.cooling_permitted),
+                ])
+
+    except Exception:
+        if created:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+        raise
+
+
 def simulate(store, args):
     recipe = store.get_recipe(args.recipe_id)
 
@@ -124,6 +182,9 @@ def simulate(store, args):
     result = runner.run(
         ambient_c=args.ambient,
     )
+
+    if args.csv is not None:
+        export_csv(result, args.csv)
 
     final = result.samples[-1]
 
@@ -176,6 +237,11 @@ def simulate(store, args):
 
     print(f"Progress:         {final.progress_percent:.1f}%")
     print(f"Status:           {result.state.value.upper()}")
+
+    if args.csv is not None:
+        print(f"CSV output:       {args.csv}")
+        print(f"CSV data rows:    {len(result.samples)}")
+
     print()
     print(
         "SIMULATION ONLY — illustrative thermal model; "

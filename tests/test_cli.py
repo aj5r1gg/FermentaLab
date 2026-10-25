@@ -1,3 +1,4 @@
+import csv
 import io
 import tempfile
 import unittest
@@ -119,6 +120,130 @@ class TestFermentaLabCLI(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("step_s", errors)
 
+
+
+    def test_csv_export(self):
+        destination = (
+            Path(self.directory.name) / "simulation.csv"
+        )
+
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "25",
+            "--csv",
+            str(destination),
+        )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(errors, "")
+        self.assertTrue(destination.is_file())
+
+        with destination.open(
+            encoding="utf-8",
+            newline="",
+        ) as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 120)
+        self.assertEqual(float(rows[-1]["elapsed_s"]), 600.0)
+        self.assertEqual(
+            float(rows[-1]["progress_percent"]),
+            100.0,
+        )
+
+    def test_csv_refuses_overwrite(self):
+        destination = (
+            Path(self.directory.name) / "existing.csv"
+        )
+
+        destination.write_text(
+            "DO NOT OVERWRITE",
+            encoding="utf-8",
+        )
+
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "25",
+            "--csv",
+            str(destination),
+        )
+
+        self.assertEqual(status, 1)
+        self.assertIn("File exists", errors)
+        self.assertEqual(
+            destination.read_text(encoding="utf-8"),
+            "DO NOT OVERWRITE",
+        )
+
+    def test_csv_invalid_directory(self):
+        destination = (
+            Path(self.directory.name)
+            / "missing"
+            / "simulation.csv"
+        )
+
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "25",
+            "--csv",
+            str(destination),
+        )
+
+        self.assertEqual(status, 1)
+        self.assertFalse(destination.exists())
+
+    def test_csv_does_not_change_simulation_summary(self):
+        destination = (
+            Path(self.directory.name) / "comparison.csv"
+        )
+
+        first_status, first_output, _ = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+        )
+
+        second_status, second_output, _ = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+            "--csv",
+            str(destination),
+        )
+
+        self.assertEqual(first_status, 0)
+        self.assertEqual(second_status, 0)
+
+        for label in (
+            "Minimum chamber:",
+            "Maximum chamber:",
+            "Final chamber:",
+            "Final food:",
+            "Heating time:",
+            "Cooling time:",
+            "Idle time:",
+            "Progress:",
+            "Status:",
+        ):
+            first_line = next(
+                line for line in first_output.splitlines()
+                if line.startswith(label)
+            )
+
+            second_line = next(
+                line for line in second_output.splitlines()
+                if line.startswith(label)
+            )
+
+            self.assertEqual(first_line, second_line)
 
 if __name__ == "__main__":
     unittest.main()
