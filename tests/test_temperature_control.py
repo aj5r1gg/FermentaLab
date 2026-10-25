@@ -97,5 +97,27 @@ class TestTemperatureController(unittest.TestCase):
                     TemperatureController(value)
 
 
+    def test_target_change_heating_to_cooling(self):
+        self.evaluate(35.0, target=42.0)
+
+        decision = self.evaluate(35.0, target=30.0)
+
+        self.assertEqual(decision.mode, ControlMode.COOLING)
+
+    def test_target_change_cooling_to_heating(self):
+        self.evaluate(35.0, target=30.0)
+
+        decision = self.evaluate(35.0, target=42.0)
+
+        self.assertEqual(decision.mode, ControlMode.HEATING)
+
+    def test_unchanged_target_preserves_hysteresis(self):
+        self.evaluate(29.0, target=30.0)
+
+        decision = self.evaluate(29.8, target=30.0)
+
+        self.assertEqual(decision.mode, ControlMode.HEATING)
+
+
 if __name__ == "__main__":
     unittest.main()
