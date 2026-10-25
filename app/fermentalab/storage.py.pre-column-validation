@@ -1,0 +1,510 @@
+"""
+FermentaLab SQLite persistence.
+
+Recipe storage and fermentation-run snapshots.
+
+No hardware control is performed by this module.
+"""
+
+import json
+import sqlite3
+import re
+from contextlib import closing, contextmanager
+from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+from fermentalab.recipes import Recipe
+from fermentalab.migrations import (
+    SCHEMA_VERSION,
+    migrate_v1_to_v2,
+)
+
+
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+class StorageError(RuntimeError):
+    pass
+
+
+class RecipeStore:
+    def __init__(self, database_path):
+        self.database_path = Path(database_path)
+
+    def connect(self):
+        connection = sqlite3.connect(
+            self.database_path,
+            timeout=10,
+        )
+
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 10000")
+
+        return connection
+
+    @contextmanager
+    def transaction(self):
+        # SQLite's connection context manager manages
+        # transactions but does not close the connection.
+        with closing(self.connect()) as connection:
+            with connection:
+                yield connection
+
+    def initialise(self):
+        """
+        Initialise a new schema v2 database or migrate v1.
+
+        Existing unsupported or incomplete schemas are rejected.
+        Migration owns its own transaction.
+        """
+        existed = self.database_path.exists()
+
+        if existed:
+            if not self.database_path.is_file():
+                raise StorageError(
+                    "Database path is not a regular file"
+                )
+
+            if self.database_path.stat().st_size == 0:
+                raise StorageError(
+                    "Existing database file is empty"
+                )
+
+        self.database_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        with closing(self.connect()) as connection:
+
+            tables = {
+                row["name"]
+                for row in connection.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name NOT LIKE 'sqlite_%'
+                    """
+                )
+            }
+
+            if not tables:
+                if existed:
+                    raise StorageError(
+                        "Existing database has no application schema"
+                    )
+
+                self._create_schema_v2(connection)
+                self._validate_schema(connection, "2")
+                return
+
+            required = {
+                "metadata",
+                "recipes",
+                "fermentation_runs",
+            }
+
+            if tables != required:
+                raise StorageError(
+                    "Incomplete or unrecognised database schema"
+                )
+
+            row = connection.execute(
+                """
+                SELECT value
+                FROM metadata
+                WHERE key = 'schema_version'
+                """
+            ).fetchone()
+
+            if row is None:
+                raise StorageError(
+                    "Database schema version is missing"
+                )
+
+            version = row["value"]
+
+            if version == str(SCHEMA_VERSION):
+                self._validate_schema(connection, version)
+                return
+
+            if version == "1":
+                self._validate_schema(connection, "1")
+                migrate_v1_to_v2(connection)
+                self._validate_schema(connection, "2")
+                return
+
+            raise StorageError(
+                "Unsupported database schema version: "
+                + version
+            )
+
+    @staticmethod
+    def _normalise_sql(sql):
+        """
+        Canonicalise harmless SQL formatting differences.
+
+        Do not remove constraints or identifiers.
+        """
+        return re.sub(r"\\s+", " ", sql.strip()).lower()
+
+    def _validate_schema(self, connection, version):
+        """
+        Validate the declared SQLite schema.
+
+        Reject structural inconsistencies without modifying
+        the database.
+        """
+        integrity = connection.execute(
+            "PRAGMA integrity_check"
+        ).fetchone()
+
+        if integrity is None or integrity[0] != "ok":
+            raise StorageError(
+                "SQLite database integrity check failed"
+            )
+
+        foreign_keys = connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+
+        if foreign_keys:
+            raise StorageError(
+                "Database contains foreign-key violations"
+            )
+
+        expected_columns = {
+            "metadata": {
+                "key", "value",
+            },
+            "recipes": {
+                "id", "name", "recipe_json", "updated_at",
+            },
+            "fermentation_runs": {
+                "id", "recipe_id", "recipe_snapshot",
+                "status", "created_at", "started_at",
+                "completed_at",
+            },
+        }
+
+        if version == "2":
+            expected_columns["fermentation_runs"].update({
+                "elapsed_seconds",
+                "running_since",
+                "paused_at",
+                "ended_at",
+                "failure_reason",
+            })
+
+        for table, expected in expected_columns.items():
+            rows = connection.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()
+
+            actual = {row["name"] for row in rows}
+
+            if actual != expected:
+                raise StorageError(
+                    f"Schema {version} column mismatch: {table}"
+                )
+
+        foreign_key_rows = connection.execute(
+            "PRAGMA foreign_key_list(fermentation_runs)"
+        ).fetchall()
+
+        relationships = {
+            (
+                row["table"],
+                row["from"],
+                row["to"],
+                row["on_delete"],
+            )
+            for row in foreign_key_rows
+        }
+
+        required_relationship = (
+            "recipes",
+            "recipe_id",
+            "id",
+            "RESTRICT",
+        )
+
+        if relationships != {required_relationship}:
+            raise StorageError(
+                "Fermentation-run foreign-key schema mismatch"
+            )
+
+        schema_rows = connection.execute(
+            """
+            SELECT name, sql
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+            """
+        ).fetchall()
+
+        definitions = {
+            row["name"]: self._normalise_sql(row["sql"])
+            for row in schema_rows
+        }
+
+        for table in expected_columns:
+            if table not in definitions:
+                raise StorageError(
+                    f"Missing schema table: {table}"
+                )
+
+        run_definition = definitions["fermentation_runs"]
+
+        if "check" not in run_definition:
+            raise StorageError(
+                "Fermentation-run constraints missing"
+            )
+
+        if version == "2":
+            required_fragments = (
+                "elapsed_seconds integer not null default 0",
+                "check (elapsed_seconds >= 0)",
+                "'paused'",
+            )
+
+            for fragment in required_fragments:
+                if fragment not in run_definition:
+                    raise StorageError(
+                        "Schema v2 run constraints mismatch"
+                    )
+
+        if version not in ("1", "2"):
+            raise StorageError(
+                "Unsupported schema validation version"
+            )
+
+    def _create_schema_v2(self, connection):
+        """
+        Create a new schema v2 database atomically.
+        """
+        if connection.in_transaction:
+            raise StorageError(
+                "Schema creation requires an idle connection"
+            )
+
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            connection.execute(
+                """
+                CREATE TABLE metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE TABLE recipes (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    recipe_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE TABLE fermentation_runs (
+                    id TEXT PRIMARY KEY,
+                    recipe_id TEXT NOT NULL,
+                    recipe_snapshot TEXT NOT NULL,
+                    status TEXT NOT NULL
+                        CHECK (
+                            status IN (
+                                'created',
+                                'running',
+                                'paused',
+                                'completed',
+                                'cancelled',
+                                'failed'
+                            )
+                        ),
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    elapsed_seconds INTEGER NOT NULL DEFAULT 0
+                        CHECK (elapsed_seconds >= 0),
+                    running_since TEXT,
+                    paused_at TEXT,
+                    ended_at TEXT,
+                    failure_reason TEXT,
+                    FOREIGN KEY (recipe_id)
+                        REFERENCES recipes(id)
+                        ON DELETE RESTRICT
+                )
+                """
+            )
+
+            connection.execute(
+                """
+                INSERT INTO metadata (key, value)
+                VALUES ('schema_version', ?)
+                """,
+                (str(SCHEMA_VERSION),),
+            )
+
+            connection.commit()
+
+        except Exception:
+            connection.rollback()
+            raise
+
+    def save_recipe(self, recipe):
+        if not isinstance(recipe, Recipe):
+            raise TypeError(
+                "save_recipe requires a Recipe instance"
+            )
+
+        # Revalidate rather than trusting a directly
+        # constructed dataclass.
+        recipe_data = asdict(recipe)
+        recipe_data["stages"] = list(recipe_data["stages"])
+
+        validated = Recipe.from_dict(recipe_data)
+
+        recipe_json = json.dumps(
+            asdict(validated),
+            sort_keys=True,
+            allow_nan=False,
+        )
+
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO recipes (
+                    id,
+                    name,
+                    recipe_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    recipe_json = excluded.recipe_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    validated.id,
+                    validated.name,
+                    recipe_json,
+                    utc_now(),
+                ),
+            )
+
+    def get_recipe(self, recipe_id):
+        with self.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT recipe_json
+                FROM recipes
+                WHERE id = ?
+                """,
+                (recipe_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return Recipe.from_dict(
+            json.loads(row["recipe_json"])
+        )
+
+    def list_recipes(self):
+        with self.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, name, updated_at
+                FROM recipes
+                ORDER BY name, id
+                """
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    def create_run(self, recipe_id):
+        run_id = str(uuid4())
+
+        with self.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT recipe_json
+                FROM recipes
+                WHERE id = ?
+                """,
+                (recipe_id,),
+            ).fetchone()
+
+            if row is None:
+                raise StorageError(
+                    f"Recipe not found: {recipe_id}"
+                )
+
+            # Validate stored data before snapshotting.
+            recipe = Recipe.from_dict(
+                json.loads(row["recipe_json"])
+            )
+
+            snapshot = json.dumps(
+                asdict(recipe),
+                sort_keys=True,
+                allow_nan=False,
+            )
+
+            connection.execute(
+                """
+                INSERT INTO fermentation_runs (
+                    id,
+                    recipe_id,
+                    recipe_snapshot,
+                    status,
+                    created_at
+                )
+                VALUES (?, ?, ?, 'created', ?)
+                """,
+                (
+                    run_id,
+                    recipe_id,
+                    snapshot,
+                    utc_now(),
+                ),
+            )
+
+        return run_id
+
+    def get_run(self, run_id):
+        with self.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM fermentation_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        result = dict(row)
+
+        result["recipe"] = Recipe.from_dict(
+            json.loads(result.pop("recipe_snapshot"))
+        )
+
+        return result

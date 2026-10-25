@@ -1,0 +1,34 @@
+services:
+  fermentalab:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+
+    image: fermentalab:dev
+
+    working_dir: /workspace
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: /workspace/app:/workspace/upstream/software/src
+
+    volumes:
+      - ./app:/workspace/app
+      - ./tests:/workspace/tests
+      - ./data:/workspace/data
+      - ./upstream/open-fermentation-project/software/src:/workspace/upstream/software/src:ro
+
+    network_mode: none
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    read_only: true
+
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
