@@ -14,6 +14,9 @@ import sys
 from pathlib import Path
 
 from fermentalab.simulation_runner import SimulationRunner
+from fermentalab.temperature_exposure import (
+    analyse_temperature_exposure,
+)
 from fermentalab.storage import RecipeStore
 
 
@@ -81,6 +84,27 @@ def build_parser():
         type=Path,
         default=None,
         help="Export simulation samples to a new CSV file",
+    )
+
+    simulate.add_argument(
+        "--exposure-min",
+        type=float,
+        default=None,
+        help="Minimum engineering exposure threshold in Celsius",
+    )
+
+    simulate.add_argument(
+        "--exposure-max",
+        type=float,
+        default=None,
+        help="Maximum engineering exposure threshold in Celsius",
+    )
+
+    simulate.add_argument(
+        "--exposure-measurement",
+        choices=("chamber", "vessel", "food"),
+        default="food",
+        help="Temperature measurement to analyse (default: food)",
     )
 
     return parser
@@ -166,6 +190,19 @@ def export_csv(result, destination):
 
 
 def simulate(store, args):
+    exposure_requested = (
+        args.exposure_min is not None
+        or args.exposure_max is not None
+    )
+
+    if exposure_requested and (
+        args.exposure_min is None
+        or args.exposure_max is None
+    ):
+        raise ValueError(
+            "--exposure-min and --exposure-max must be supplied together"
+        )
+
     recipe = store.get_recipe(args.recipe_id)
 
     if recipe is None:
@@ -182,6 +219,16 @@ def simulate(store, args):
     result = runner.run(
         ambient_c=args.ambient,
     )
+
+    exposure = None
+
+    if exposure_requested:
+        exposure = analyse_temperature_exposure(
+            result.samples,
+            measurement=f"{args.exposure_measurement}_c",
+            minimum_c=args.exposure_min,
+            maximum_c=args.exposure_max,
+        )
 
     if args.csv is not None:
         export_csv(result, args.csv)
@@ -241,6 +288,44 @@ def simulate(store, args):
     if args.csv is not None:
         print(f"CSV output:       {args.csv}")
         print(f"CSV data rows:    {len(result.samples)}")
+
+    if exposure is not None:
+        print()
+        print("Temperature Exposure — Engineering Thresholds")
+        print()
+        print(f"Measurement:      {args.exposure_measurement}")
+        print(
+            f"Thresholds:       "
+            f"{exposure.minimum_c:.3f}–{exposure.maximum_c:.3f} °C"
+        )
+        print(
+            f"Observed minimum: {exposure.observed_minimum_c:.3f} °C"
+        )
+        print(
+            f"Observed maximum: {exposure.observed_maximum_c:.3f} °C"
+        )
+        print(
+            f"Below range:      "
+            f"{exposure.below_seconds / 3600:.3f} hours"
+        )
+        print(
+            f"Within range:     "
+            f"{exposure.within_seconds / 3600:.3f} hours"
+        )
+        print(
+            f"Above range:      "
+            f"{exposure.above_seconds / 3600:.3f} hours"
+        )
+        print(f"Excursions:       {exposure.excursion_count}")
+        print(
+            f"Longest:          "
+            f"{exposure.longest_excursion_seconds / 60:.2f} minutes"
+        )
+        print()
+        print(
+            "Engineering thresholds only — "
+            "not qualified food-safety limits."
+        )
 
     print()
     print(

@@ -245,5 +245,128 @@ class TestFermentaLabCLI(unittest.TestCase):
 
             self.assertEqual(first_line, second_line)
 
+    def test_exposure_valid_thresholds(self):
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+            "--exposure-min",
+            "29",
+            "--exposure-max",
+            "31",
+        )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(errors, "")
+        self.assertIn(
+            "Temperature Exposure — Engineering Thresholds",
+            output,
+        )
+        self.assertIn("29.000–31.000", output)
+        self.assertIn("Excursions:", output)
+        self.assertIn("COMPLETED", output)
+
+    def test_exposure_defaults_to_food(self):
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+            "--exposure-min",
+            "29",
+            "--exposure-max",
+            "31",
+        )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(errors, "")
+        self.assertIn("Measurement:      food", output)
+
+    def test_exposure_chamber_measurement(self):
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+            "--exposure-min",
+            "29",
+            "--exposure-max",
+            "31",
+            "--exposure-measurement",
+            "chamber",
+        )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(errors, "")
+        self.assertIn("Measurement:      chamber", output)
+
+    def test_exposure_missing_minimum(self):
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+            "--exposure-max",
+            "31",
+        )
+
+        self.assertEqual(status, 1)
+        self.assertIn(
+            "must be supplied together",
+            errors,
+        )
+
+    def test_exposure_missing_maximum(self):
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+            "--exposure-min",
+            "29",
+        )
+
+        self.assertEqual(status, 1)
+        self.assertIn(
+            "must be supplied together",
+            errors,
+        )
+
+    def test_exposure_reversed_thresholds(self):
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+            "--exposure-min",
+            "32",
+            "--exposure-max",
+            "28",
+        )
+
+        self.assertEqual(status, 1)
+        self.assertIn(
+            "minimum_c cannot exceed maximum_c",
+            errors,
+        )
+
+    def test_exposure_optional(self):
+        status, output, errors = self.run_cli(
+            "simulate",
+            "cli-test",
+            "--ambient",
+            "38",
+        )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(errors, "")
+        self.assertNotIn(
+            "Temperature Exposure — Engineering Thresholds",
+            output,
+        )
+        self.assertIn("COMPLETED", output)
+
+
 if __name__ == "__main__":
     unittest.main()
