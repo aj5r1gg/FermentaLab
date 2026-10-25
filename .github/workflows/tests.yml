@@ -13,13 +13,13 @@ permissions:
 jobs:
   regression:
     name: Python regression suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     timeout-minutes: 15
 
     steps:
       - name: Check out FermentaLab
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Retrieve pinned upstream reference
         shell: bash
