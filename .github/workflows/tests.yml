@@ -43,6 +43,16 @@ jobs:
 
           test "$ACTUAL" = "$EXPECTED"
 
+      - name: Test publication integrity safeguard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m unittest discover \
+            -s tests_host \
+            -p 'test_publication_check.py' \
+            -v
+
       - name: Build development image
         run: docker compose build
 
