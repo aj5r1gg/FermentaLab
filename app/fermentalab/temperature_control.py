@@ -53,6 +53,7 @@ class TemperatureController:
 
         self.deadband_c = float(deadband_c)
         self._mode = ControlMode.INHIBITED
+        self._last_target_c = None
 
     @property
     def mode(self) -> ControlMode:
@@ -81,6 +82,11 @@ class TemperatureController:
 
         measured = float(measured_c)
         target = float(target_c)
+
+        if self._last_target_c != target:
+            self._mode = ControlMode.INHIBITED
+
+        self._last_target_c = target
 
         if self._mode == ControlMode.HEATING:
             if measured >= target:
