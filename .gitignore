@@ -11,3 +11,6 @@ data/*
 
 # External upstream reference repository
 /upstream/
+
+# Historical development snapshots
+*.pre-*

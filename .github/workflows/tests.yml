@@ -1,0 +1,67 @@
+name: FermentaLab Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: Python regression suite
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out FermentaLab
+        uses: actions/checkout@v4
+
+      - name: Retrieve pinned upstream reference
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p upstream
+
+          git clone \
+            https://github.com/Larouex/open-fermentation-project.git \
+            upstream/open-fermentation-project
+
+          EXPECTED="$(cat research/upstream-commit.txt)"
+
+          git -C upstream/open-fermentation-project \
+            checkout --detach "$EXPECTED"
+
+          ACTUAL="$(
+            git -C upstream/open-fermentation-project rev-parse HEAD
+          )"
+
+          test "$ACTUAL" = "$EXPECTED"
+
+      - name: Build development image
+        run: docker compose build
+
+      - name: Run regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export LOCAL_UID="$(id -u)"
+          export LOCAL_GID="$(id -g)"
+
+          TEST_DATA_DIR="$(mktemp -d)"
+
+          trap 'rm -rf -- "$TEST_DATA_DIR"' EXIT
+
+          docker compose run --rm --no-deps \
+            --volume "$TEST_DATA_DIR:/workspace/data" \
+            fermentalab \
+            python -m unittest discover \
+              -s tests \
+              -p 'test_*.py' \
+              -v
