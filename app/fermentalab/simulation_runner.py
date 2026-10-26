@@ -28,7 +28,11 @@ from fermentalab.fermentation_runtime import (
 from fermentalab.recipes import Recipe
 from fermentalab.sensors import (
     ChamberTemperatureReading,
+    EnvironmentalQuantity,
+    EnvironmentalReading,
+    MeasurementDomain,
     SimulatedChamberTemperatureSensor,
+    SimulatedEnvironmentalSensor,
 )
 from fermentalab.thermal_model import ThermalModel
 
@@ -83,6 +87,7 @@ class SimulationObservation:
     state: RuntimeState
     supplementary_readings: tuple[ChamberTemperatureReading, ...] = ()
     supplementary_failures: tuple[SupplementarySensorFailure, ...] = ()
+    environmental_readings: tuple[EnvironmentalReading, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -150,6 +155,8 @@ class SimulationRunner:
         observer=None,
         report_every_s: float = 900.0,
         supplementary_chamber_sensors: tuple[SupplementarySensorConfig, ...] = (),
+        ambient_humidity_percent: float | None = None,
+        chamber_humidity_percent: float | None = None,
     ) -> SimulationResult:
 
         if coordinator is not None:
@@ -227,6 +234,19 @@ class SimulationRunner:
         if len(ids) != len(set(ids)):
             raise ValueError('duplicate supplementary sensor_id')
 
+        for name, humidity in (
+            ('ambient_humidity_percent', ambient_humidity_percent),
+            ('chamber_humidity_percent', chamber_humidity_percent),
+        ):
+            if humidity is not None and (
+                type(humidity) not in (int, float)
+                or not isfinite(humidity)
+                or not 0.0 <= humidity <= 100.0
+            ):
+                raise ValueError(
+                    f'{name} must be between 0 and 100 percent'
+                )
+
         runtime = (
             coordinator.runtime
             if coordinator is not None
@@ -276,6 +296,41 @@ class SimulationRunner:
                     )
 
             return tuple(readings), tuple(failures)
+
+        humidity_sensors = tuple(
+            (
+                SimulatedEnvironmentalSensor(
+                    sensor_id=sensor_id,
+                    domain=domain,
+                    quantity=EnvironmentalQuantity.RELATIVE_HUMIDITY_PERCENT,
+                ),
+                humidity,
+            )
+            for sensor_id, domain, humidity in (
+                (
+                    "ambient-humidity",
+                    MeasurementDomain.AMBIENT,
+                    ambient_humidity_percent,
+                ),
+                (
+                    "chamber-humidity",
+                    MeasurementDomain.CHAMBER,
+                    chamber_humidity_percent,
+                ),
+            )
+            if humidity is not None
+        )
+
+        # Humidity is sampled only for observer reports.
+        # It is not modelled or used for control decisions.
+        def environmental_readings(now_s):
+            return tuple(
+                sensor.read(
+                    value=humidity,
+                    measured_at_s=now_s,
+                )
+                for sensor, humidity in humidity_sensors
+            )
 
         duration_s = (
             self.recipe.total_duration_minutes * 60.0
@@ -405,6 +460,9 @@ class SimulationRunner:
                             state=decision.state,
                             supplementary_readings=monitoring_readings,
                             supplementary_failures=monitoring_failures,
+                            environmental_readings=(
+                                environmental_readings(now_s)
+                            ),
                         )
                     )
 
@@ -510,6 +568,9 @@ class SimulationRunner:
                         state=completion.state,
                         supplementary_readings=monitoring_readings,
                         supplementary_failures=monitoring_failures,
+                        environmental_readings=(
+                            environmental_readings(duration_s)
+                        ),
                     )
                 )
 
