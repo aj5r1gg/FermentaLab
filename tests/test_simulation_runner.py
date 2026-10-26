@@ -1,5 +1,8 @@
 import unittest
 
+from fermentalab.command_admission import (
+    SimulatedCommandAdmission,
+)
 from fermentalab.fermentation_runtime import RuntimeState
 from fermentalab.recipes import Recipe
 from fermentalab.simulation_runner import SimulationRunner
@@ -195,3 +198,180 @@ class TestSimulationRunner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSimulationCommandAdmission(unittest.TestCase):
+
+    def make_authority(self):
+        authority = SimulatedCommandAdmission()
+
+        identity = authority.acquire(
+            execution_session_id="simulation-integration"
+        )
+
+        return authority, identity
+
+    def test_inhibited_authority_prevents_heating(self):
+        authority, identity = self.make_authority()
+
+        runner = SimulationRunner(
+            recipe(duration_minutes=1),
+            initial_c=20.0,
+        )
+
+        result = runner.run(
+            ambient_c=20.0,
+            command_admission=authority,
+            command_identity=identity,
+        )
+
+        self.assertEqual(
+            result.state,
+            RuntimeState.COMPLETED,
+        )
+        self.assertEqual(result.heating_seconds, 0.0)
+        self.assertEqual(result.cooling_seconds, 0.0)
+
+    def test_enabled_authority_permits_heating(self):
+        authority, identity = self.make_authority()
+        authority.enable(identity)
+
+        runner = SimulationRunner(
+            recipe(duration_minutes=1),
+            initial_c=20.0,
+        )
+
+        result = runner.run(
+            ambient_c=20.0,
+            command_admission=authority,
+            command_identity=identity,
+        )
+
+        self.assertEqual(
+            result.state,
+            RuntimeState.COMPLETED,
+        )
+        self.assertGreater(result.heating_seconds, 0.0)
+
+    def test_revocation_prevents_subsequent_heating(self):
+        authority, identity = self.make_authority()
+        authority.enable(identity)
+
+        observations = []
+
+        def observer(observation):
+            observations.append(observation)
+
+            if observation.elapsed_s >= 5.0:
+                authority.revoke()
+
+        runner = SimulationRunner(
+            recipe(duration_minutes=1),
+            initial_c=20.0,
+        )
+
+        result = runner.run(
+            ambient_c=20.0,
+            command_admission=authority,
+            command_identity=identity,
+            observer=observer,
+            report_every_s=5.0,
+        )
+
+        self.assertEqual(
+            result.state,
+            RuntimeState.COMPLETED,
+        )
+
+        self.assertGreater(result.heating_seconds, 0.0)
+        self.assertLess(result.heating_seconds, 60.0)
+
+        self.assertFalse(authority.enabled)
+
+
+class TestSimulationAuthorityCleanup(unittest.TestCase):
+
+    def make_authority(self):
+        authority = SimulatedCommandAdmission()
+
+        identity = authority.acquire(
+            execution_session_id="cleanup-test"
+        )
+
+        authority.enable(identity)
+
+        return authority, identity
+
+    def test_completion_revokes_command_authority(self):
+        authority, identity = self.make_authority()
+
+        runner = SimulationRunner(
+            recipe(duration_minutes=1),
+            initial_c=20.0,
+        )
+
+        result = runner.run(
+            ambient_c=20.0,
+            command_admission=authority,
+            command_identity=identity,
+        )
+
+        self.assertEqual(
+            result.state,
+            RuntimeState.COMPLETED,
+        )
+
+        self.assertFalse(
+            authority.enabled,
+            "Command authority remained enabled after completion",
+        )
+
+        rejected = authority.admit(
+            identity=identity,
+            heating=True,
+            cooling=False,
+        )
+
+        self.assertFalse(
+            rejected.accepted,
+            "Old identity admitted heating after completion",
+        )
+
+    def test_exception_revokes_command_authority(self):
+        authority, identity = self.make_authority()
+
+        runner = SimulationRunner(
+            recipe(duration_minutes=1),
+            initial_c=20.0,
+        )
+
+        def failing_ambient(elapsed_s):
+            if elapsed_s >= 5.0:
+                raise RuntimeError("Injected simulation failure")
+            return 20.0
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Injected simulation failure",
+        ):
+            runner.run(
+                ambient_c=failing_ambient,
+                command_admission=authority,
+                command_identity=identity,
+            )
+
+        self.assertFalse(
+            authority.enabled,
+            "Command authority remained enabled after failure",
+        )
+
+        rejected = authority.admit(
+            identity=identity,
+            heating=True,
+            cooling=False,
+        )
+
+        self.assertFalse(
+            rejected.accepted,
+            "Old identity admitted heating after failure",
+        )

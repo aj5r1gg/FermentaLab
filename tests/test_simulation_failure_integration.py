@@ -13,6 +13,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fermentalab.command_admission import (
+    SimulatedCommandAdmission,
+)
 from fermentalab.execution_coordinator import (
     ExecutionCoordinator,
 )
@@ -369,3 +372,239 @@ class TestSimulationFailureIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPersistentCommandAdmissionIntegration(
+    TestSimulationFailureIntegration
+):
+
+    def make_authority(self, *, enabled):
+        authority = SimulatedCommandAdmission()
+
+        identity = authority.acquire(
+            execution_session_id=self.run_id
+        )
+
+        if enabled:
+            authority.enable(identity)
+
+        return authority, identity
+
+    def test_persistent_inhibited_authority_prevents_heating(self):
+        authority, identity = self.make_authority(
+            enabled=False
+        )
+
+        result = self.runner.run(
+            ambient_c=20.0,
+            coordinator=self.coordinator,
+            command_admission=authority,
+            command_identity=identity,
+        )
+
+        self.assertEqual(
+            result.state,
+            RuntimeState.COMPLETED,
+        )
+        self.assertEqual(result.heating_seconds, 0.0)
+        self.assertFalse(authority.enabled)
+
+    def test_persistent_enabled_authority_and_completion(self):
+        authority, identity = self.make_authority(
+            enabled=True
+        )
+
+        result = self.runner.run(
+            ambient_c=20.0,
+            coordinator=self.coordinator,
+            command_admission=authority,
+            command_identity=identity,
+        )
+
+        self.assertEqual(
+            result.state,
+            RuntimeState.COMPLETED,
+        )
+        self.assertGreater(result.heating_seconds, 0.0)
+        self.assertFalse(authority.enabled)
+
+        rejected = authority.admit(
+            identity=identity,
+            heating=True,
+            cooling=False,
+        )
+
+        self.assertFalse(rejected.accepted)
+
+    def test_persistent_failure_revokes_authority(self):
+        authority, identity = self.make_authority(
+            enabled=True
+        )
+
+        def failing_ambient(elapsed_s):
+            if elapsed_s >= 5.0:
+                raise RuntimeError(
+                    "Injected persistent authority failure"
+                )
+            return 20.0
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Injected persistent authority failure",
+        ):
+            self.runner.run(
+                ambient_c=failing_ambient,
+                coordinator=self.coordinator,
+                command_admission=authority,
+                command_identity=identity,
+            )
+
+        self.assertFalse(authority.enabled)
+
+        rejected = authority.admit(
+            identity=identity,
+            heating=True,
+            cooling=False,
+        )
+
+        self.assertFalse(rejected.accepted)
+
+        self.assert_failed_and_inhibited()
+
+
+class TestPersistentExecutionSessionFencing(
+    TestSimulationFailureIntegration
+):
+
+    def test_unrelated_execution_session_rejected(self):
+        authority = SimulatedCommandAdmission()
+
+        identity = authority.acquire(
+            execution_session_id="unrelated-execution-session"
+        )
+        authority.enable(identity)
+
+        with self.assertRaises(
+            (ValueError, RuntimeError),
+            msg="Unrelated execution identity was accepted",
+        ):
+            self.runner.run(
+                ambient_c=20.0,
+                coordinator=self.coordinator,
+                command_admission=authority,
+                command_identity=identity,
+            )
+
+        self.assertFalse(
+            authority.enabled,
+            "Rejected execution left authority enabled",
+        )
+
+        rejected = authority.admit(
+            identity=identity,
+            heating=True,
+            cooling=False,
+        )
+
+        self.assertFalse(rejected.accepted)
+
+
+class TestPersistentActiveIdentityFencing(
+    TestSimulationFailureIntegration
+):
+
+    def test_stale_identity_rejected_before_execution(self):
+        authority = SimulatedCommandAdmission()
+
+        old_identity = authority.acquire(
+            execution_session_id=self.run_id
+        )
+
+        authority.enable(old_identity)
+
+        # Advance the inhibition generation, invalidating
+        # the previously issued identity.
+        new_identity = authority.inhibit(old_identity)
+        authority.enable(new_identity)
+
+        with self.assertRaises(
+            (ValueError, RuntimeError),
+            msg="Stale identity was accepted for execution",
+        ):
+            self.runner.run(
+                ambient_c=20.0,
+                coordinator=self.coordinator,
+                command_admission=authority,
+                command_identity=old_identity,
+            )
+
+        self.assertFalse(
+            authority.enabled,
+            "Rejected startup left authority enabled",
+        )
+
+        rejected = authority.admit(
+            identity=new_identity,
+            heating=True,
+            cooling=False,
+        )
+
+        self.assertFalse(
+            rejected.accepted,
+            "Rejected startup retained active ON authority",
+        )
+
+        run = self.store.get_run(self.run_id)
+
+        self.assertEqual(
+            run["status"],
+            "created",
+            "Rejected startup changed persistent run state",
+        )
+
+
+class TestPersistentStartupAuthorityCleanup(
+    TestSimulationFailureIntegration
+):
+
+    def test_coordinator_start_failure_revokes_authority(self):
+        authority = SimulatedCommandAdmission()
+
+        identity = authority.acquire(
+            execution_session_id=self.run_id
+        )
+        authority.enable(identity)
+
+        with patch.object(
+            self.coordinator,
+            "start",
+            side_effect=RuntimeError(
+                "Injected coordinator startup failure"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Injected coordinator startup failure",
+            ):
+                self.runner.run(
+                    ambient_c=20.0,
+                    coordinator=self.coordinator,
+                    command_admission=authority,
+                    command_identity=identity,
+                )
+
+        self.assertFalse(
+            authority.enabled,
+            "Startup failure left command authority enabled",
+        )
+
+        rejected = authority.admit(
+            identity=identity,
+            heating=True,
+            cooling=False,
+        )
+
+        self.assertFalse(
+            rejected.accepted,
+            "Startup failure retained ON authority",
+        )

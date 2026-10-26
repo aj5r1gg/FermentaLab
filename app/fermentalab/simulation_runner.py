@@ -13,6 +13,11 @@ hardware safety mechanisms are implemented here.
 from dataclasses import dataclass
 from math import isfinite
 
+from fermentalab.command_admission import (
+    CommandIdentity,
+    CommandMode,
+    SimulatedCommandAdmission,
+)
 from fermentalab.execution_coordinator import (
     ExecutionCoordinator,
 )
@@ -109,6 +114,8 @@ class SimulationRunner:
         *,
         ambient_c,
         coordinator: ExecutionCoordinator | None = None,
+        command_admission: SimulatedCommandAdmission | None = None,
+        command_identity: CommandIdentity | None = None,
         observer=None,
         report_every_s: float = 900.0,
     ) -> SimulationResult:
@@ -122,6 +129,47 @@ class SimulationRunner:
             if coordinator.runtime.recipe != self.recipe:
                 raise ValueError(
                     "Coordinator recipe snapshot does not match"
+                )
+
+        if command_admission is None:
+            if command_identity is not None:
+                raise ValueError(
+                    "command_identity requires command_admission"
+                )
+        else:
+            if not isinstance(
+                command_admission,
+                SimulatedCommandAdmission,
+            ):
+                raise TypeError(
+                    "command_admission must be "
+                    "SimulatedCommandAdmission"
+                )
+
+            if not isinstance(command_identity, CommandIdentity):
+                command_admission.revoke()
+                raise TypeError(
+                    "command_identity must be CommandIdentity"
+                )
+
+            if coordinator is not None:
+                if (
+                    command_identity.execution_session_id
+                    != coordinator.run_id
+                ):
+                    command_admission.revoke()
+                    raise ValueError(
+                        "Command identity execution session "
+                        "does not match persistent run"
+                    )
+
+            if not command_admission.is_active_identity(
+                command_identity
+            ):
+                command_admission.revoke()
+                raise ValueError(
+                    "Command identity is not the active "
+                    "ownership and inhibition generation"
                 )
 
         if observer is not None and not callable(observer):
@@ -150,12 +198,16 @@ class SimulationRunner:
             self.recipe.total_duration_minutes * 60.0
         )
 
-        if coordinator is None:
-            runtime.start(now_s=0.0)
-        else:
-            coordinator.start(now_s=0.0)
+        started = False
 
         try:
+            if coordinator is None:
+                runtime.start(now_s=0.0)
+            else:
+                coordinator.start(now_s=0.0)
+
+            started = True
+
             samples = []
 
             minimum = float("inf")
@@ -212,6 +264,27 @@ class SimulationRunner:
 
                 heating = decision.heating_permitted
                 cooling = decision.cooling_permitted
+
+                if command_admission is not None:
+                    admitted = command_admission.admit(
+                        identity=command_identity,
+                        heating=heating,
+                        cooling=cooling,
+                    )
+
+                    executed = command_admission.execute(
+                        identity=command_identity,
+                        decision=admitted,
+                    )
+
+                    heating = (
+                        executed.accepted
+                        and executed.mode is CommandMode.HEATING
+                    )
+                    cooling = (
+                        executed.accepted
+                        and executed.mode is CommandMode.COOLING
+                    )
 
                 if (
                     observer is not None
@@ -346,8 +419,21 @@ class SimulationRunner:
             )
 
         except Exception:
-            if coordinator is not None:
-                coordinator.abort_execution()
-            else:
-                runtime.inhibit()
+            if started:
+                if coordinator is not None:
+                    coordinator.abort_execution()
+                else:
+                    runtime.inhibit()
             raise
+
+        finally:
+            # Simulation-only authority cleanup.
+            #
+            # The runner must not leave previously enabled
+            # command admission active after completion,
+            # failure, or observer exceptions.
+            #
+            # This does not establish exclusive ownership
+            # of physical actuator hardware.
+            if command_admission is not None:
+                command_admission.revoke()
