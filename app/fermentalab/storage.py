@@ -553,6 +553,37 @@ class RecipeStore:
 
         return run_id
 
+    def list_runs(self, limit=50):
+        """
+        Return recent fermentation-run summaries.
+
+        Read-only operation. Recipe snapshots are not loaded.
+        """
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("Run listing limit must be 1..1000")
+
+        with self.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    id,
+                    recipe_id,
+                    status,
+                    created_at,
+                    started_at,
+                    completed_at,
+                    ended_at,
+                    elapsed_seconds,
+                    elapsed_microseconds
+                FROM fermentation_runs
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
     def get_run(self, run_id):
         with self.transaction() as connection:
             row = connection.execute(
@@ -575,7 +606,13 @@ class RecipeStore:
 
         return result
 
-    def transition_run(self, run_id, action):
+    def transition_run(
+        self,
+        run_id,
+        action,
+        *,
+        allowed_from=None,
+    ):
         """
         Atomically transition a fermentation run.
 
@@ -620,6 +657,30 @@ class RecipeStore:
                 )
 
             current = row["status"]
+
+            # Caller restrictions are evaluated under the
+            # same SQLite write transaction as the transition.
+            # This prevents stale preflight observations from
+            # authorising an unsafe lifecycle change.
+            if allowed_from is not None:
+                if (
+                    not isinstance(allowed_from, tuple)
+                    or not allowed_from
+                    or any(
+                        not isinstance(state, str)
+                        for state in allowed_from
+                    )
+                ):
+                    raise StorageError(
+                        "allowed_from must be a non-empty "
+                        "tuple of state names"
+                    )
+
+                if current not in allowed_from:
+                    raise StorageError(
+                        f"Cannot {action} run in state {current}; "
+                        "caller restriction rejected transition"
+                    )
 
             if current in (
                 "completed",
