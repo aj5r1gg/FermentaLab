@@ -1,0 +1,11 @@
+FROM fermentalab:dev
+
+# Development and testing tools only.
+# Not included in the Raspberry Pi runtime.
+
+RUN python -m pip install --no-cache-dir \
+    "coverage==7.17.0" \
+    "ruff==0.17.2" \
+    "hypothesis==6.170.11"
+
+CMD ["python", "-m", "coverage", "--version"]

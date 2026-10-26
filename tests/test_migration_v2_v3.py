@@ -7,7 +7,6 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from fermentalab.recipes import Recipe
 from fermentalab.storage import RecipeStore
 
 

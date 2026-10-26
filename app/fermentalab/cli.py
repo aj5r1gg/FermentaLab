@@ -8,7 +8,6 @@ No physical hardware control.
 
 import argparse
 import csv
-import os
 import sqlite3
 import sys
 from pathlib import Path
