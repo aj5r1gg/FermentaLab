@@ -17,6 +17,8 @@ from enum import Enum
 from secrets import token_hex
 from time import monotonic_ns
 
+from fermentalab.hardware_owner import HardwareOwner
+
 
 class CommandMode(Enum):
     OFF = "off"
@@ -42,7 +44,16 @@ class CommandDecision:
 class SimulatedCommandAdmission:
     """In-memory simulated command-admission boundary."""
 
-    def __init__(self, *, clock_ns=None):
+    def __init__(
+        self, *, clock_ns=None, hardware_owner=None
+    ):
+        if (
+            hardware_owner is not None
+            and not isinstance(hardware_owner, HardwareOwner)
+        ):
+            raise TypeError(
+                'hardware_owner must be a HardwareOwner'
+            )
         if clock_ns is not None and not callable(clock_ns):
             raise TypeError("clock_ns must be callable")
 
@@ -53,6 +64,19 @@ class SimulatedCommandAdmission:
         self._enabled = False
         self._pending_decisions = {}
         self._command_sequence = 0
+        self._hardware_owner = hardware_owner
+
+    def _ownership_valid(self):
+        if self._hardware_owner is None:
+            return True
+
+        if self._hardware_owner.valid():
+            return True
+
+        # Ownership failure invalidates the entire command
+        # session, including previously admitted ON commands.
+        self.revoke()
+        return False
 
     @property
     def enabled(self):
@@ -98,6 +122,11 @@ class SimulatedCommandAdmission:
         if identity is None or identity is not self._identity:
             raise RuntimeError(
                 "invalid ownership identity"
+            )
+
+        if not self._ownership_valid():
+            raise RuntimeError(
+                'hardware ownership unavailable'
             )
 
         self._enabled = True
@@ -171,6 +200,13 @@ class SimulatedCommandAdmission:
                 accepted=False,
                 mode=CommandMode.OFF,
                 reason="stale ownership or execution session",
+            )
+
+        if not self._ownership_valid():
+            return CommandDecision(
+                accepted=False,
+                mode=CommandMode.OFF,
+                reason='hardware ownership unavailable',
             )
 
         if not self._enabled:
@@ -268,6 +304,9 @@ class SimulatedCommandAdmission:
             return rejected
 
         if identity is None or identity is not self._identity:
+            return rejected
+
+        if not self._ownership_valid():
             return rejected
 
         if not self._enabled:
