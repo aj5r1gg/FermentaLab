@@ -4,7 +4,7 @@
 
 FermentaLab is a single-chamber food-fermentation controller intended to use an existing compressor-driven bar refrigerator, supplementary heating, measured chamber conditions, and independent physical safety provisions. Development takes place on Ubuntu with Docker Compose; the intended appliance controller runs on Raspberry Pi/Linux.
 
-> **Development status (26 October 2026): software qualification only.** The most recent locally reported qualification run passed **549 Python tests** and Ruff checks. These results do **not** demonstrate functioning Raspberry Pi hardware, physical actuator control, electrical safety, calibrated sensing, or fitness for unattended food production. Tests and status must be reverified against the checked-out commit.
+> **Development status (26 October 2026): software qualification only.** Local qualification was reported as **549 Python tests passing and Ruff passing**. GitHub Actions **FermentaLab Tests** also succeeded on `development-history` at commit **`ce741df`** ([run 40306025265](https://github.com/aj5r1gg/FermentaLab/actions/runs/40306025265)). The GitHub run verifies its Python regression job; it is **not** evidence of physical commissioning, calibrated sensors, safe actuator switching, electrical safety, or unattended food-production suitability. Reverify against each future commit.
 
 ## Scope
 
@@ -38,7 +38,7 @@ Independent actuator-permission protection (physical: pending)
 Independent thermal/electrical protection (physical: pending)
 ```
 
-The normal software controller is **not** the sole safety mechanism. Physical permission and thermal/electrical protection are separate domains that require independent implementation and qualification. An advisory heating or cooling decision is never, by itself, physical actuator authority.
+The specification identifies three independent safety domains: **A — normal Pi control**, **B — independent timed actuator permission**, and **C — independent physical thermal/electrical cutoff**. Domains B and C are not established by the present software. The normal software controller is **not** the sole safety mechanism. An advisory heating or cooling decision is never, by itself, physical actuator authority.
 
 ## Implemented software
 
@@ -67,12 +67,37 @@ The DS18B20 is a **provisional sensor candidate**, not a qualified authoritative
 
 The project's Docker environment is intended for software development and reproducible qualification. It does not grant permission to operate physical actuators.
 
-### Quick start: inspect and qualify
+### Fresh Ubuntu checkout
 
-From the repository root:
+Prerequisites: Git, Docker Engine with Compose (`docker compose`), Bash, and permission to use Docker. The GitHub CLI (`gh`) is optional and only needed for inspecting or manually dispatching CI.
 
 ```bash
-cd ~/projects/fermentalab
+git clone https://github.com/aj5r1gg/FermentaLab.git
+cd FermentaLab
+git switch development-history
+```
+
+The current GitHub workflow also uses a pinned research checkout of the upstream Open Fermentation Project. If `upstream/open-fermentation-project` is absent, establish it at the recorded commit before running checks that require it:
+
+```bash
+mkdir -p upstream
+git clone https://github.com/Larouex/open-fermentation-project.git \
+    upstream/open-fermentation-project
+git -C upstream/open-fermentation-project checkout --detach \
+    "$(cat research/upstream-commit.txt)"
+test "$(git -C upstream/open-fermentation-project rev-parse HEAD)" = \
+    "$(cat research/upstream-commit.txt)"
+```
+
+Do not overwrite an existing upstream checkout; inspect it first. Upstream code is a research reference, not an approved actuator controller.
+
+Build the development image with `docker compose build`. The development image installs `hypothesis==6.170.11`, used by the sensor fault-injection tests; `docker/Dockerfile.qualification` separately provides Ruff, Coverage and Hypothesis for local qualification. These are **different image configurations**.
+
+### Quick start: inspect and qualify
+
+From the repository root (whether freshly cloned or already checked out):
+
+```bash
 ./scripts/check.sh all
 ```
 
@@ -100,6 +125,7 @@ Do not run hardware-dependent code in the development container on the assumptio
 
 | Location | Responsibility |
 | --- | --- |
+| `app/fermentalab/actuator_authority.py` | Software actuator authority tokens |
 | `app/fermentalab/temperature_control.py` | Temperature regulation decisions |
 | `app/fermentalab/supervisor.py` | Supervision and inhibition |
 | `app/fermentalab/fermentation_runtime.py` | Fermentation programme runtime |
@@ -114,6 +140,9 @@ Do not run hardware-dependent code in the development container on the assumptio
 | `app/fermentalab/ds18b20_reader.py` | Optional DS18B20 acquisition and reading adapter |
 | `tests/` | Automated software tests |
 | `scripts/check.sh` | Local qualification entry point |
+| `compose.yaml` and `docker/Dockerfile` | Development container configuration |
+| `docker/Dockerfile.qualification` | Local qualification image |
+| `research/upstream-commit.txt` | Pinned upstream source revision |
 | `.github/workflows/tests.yml` | GitHub Actions test workflow |
 
 Some exploratory controllers, comparisons, and diagnostics in the repository are **simulation-only** and must not be treated as approved hardware control implementations.
@@ -151,7 +180,7 @@ The specifications establish requirements and acceptance obligations; README sum
 
 ## Current qualification and next milestones
 
-**Last reported local result:** 549 tests passed, Ruff passed (26 October 2026), following DS18B20 chamber-measurement integration. This is a historical report, not an assertion that CI has passed on GitHub.
+**Recorded results (26 October 2026):** 549 Python tests and Ruff passed locally. GitHub Actions run [40306025265](https://github.com/aj5r1gg/FermentaLab/actions/runs/40306025265) completed successfully on commit `ce741df` (`development-history`). The earlier CI run on `09c3ac5` failed at test discovery because the development image lacked Hypothesis; commit `ce741df` added that dependency. Each result is specific to its commit and environment. The GitHub workflow does not establish that local Ruff checks ran in CI.
 
 The practical next sequence is:
 
@@ -165,7 +194,17 @@ The milestone specification—not the mere presence of code or a passing CI badg
 
 ## Continuous integration
 
-A GitHub Actions workflow exists at `.github/workflows/tests.yml`. It runs checks on GitHub's environment; the local qualification wrapper may cover additional checks and may use a different container configuration. **Both results should be reviewed**, rather than assuming a CI success proves equivalence or physical safety.
+The active **FermentaLab Tests** workflow is at `.github/workflows/tests.yml`. Its Python regression suite passed in [run 40306025265](https://github.com/aj5r1gg/FermentaLab/actions/runs/40306025265) on `development-history` (`ce741df`). The repository default branch is `main`; the recorded run was triggered using `workflow_dispatch`. Local `scripts/check.sh all` also runs Ruff and is a separate qualification path. **Review both results**: GitHub CI success is neither identical to full local qualification nor evidence of physical safety.
+
+With `gh` installed and authenticated, inspect or manually trigger the workflow:
+
+```bash
+gh run list --workflow tests.yml --branch development-history --limit 5
+gh workflow run tests.yml --ref development-history
+# Then retrieve the new run ID and check its commit and conclusion.
+```
+
+A successful dispatch request only means the event was accepted. Confirm the run has actually completed with `success`.
 
 A typical release-of-work procedure is:
 
@@ -179,6 +218,14 @@ git push -u origin HEAD
 
 Review the GitHub Actions run for the pushed commit. On failure, inspect the job log, repair the cause, rerun local qualification, and push a new corrective commit. Do not claim CI passed until GitHub reports success.
 
+## Configuration and physical deployment status
+
+The existing runtime provides recipe stages, local SQLite lifecycle persistence and conservative recovery of interrupted runs. The exact production CLI commands, database file locations, environment-variable catalogue, installed recipe paths and Raspberry Pi service/deployment procedure have **not been verified from the repository configuration for this revision**. They are not documented here as stable interfaces. Refer to the actual CLI, storage and Compose configuration before selecting paths or running production commands.
+
+The DS18B20 adapter can produce an existing `ChamberTemperatureReading` containing sensor identity, temperature and a monotonic timestamp. Its tests inject simulated sensor objects. The optional `w1thermsensor` dependency and real probe have not been commissioned on Raspberry Pi. This path is not yet wired as a qualified, authoritative physical measurement path into actuation.
+
+No Raspberry Pi production deployment, real power switching, or independent safety commissioning procedure is supplied by the currently verified software. Do not substitute this development README for the physical engineering specifications.
+
 ## Local control and contributions
 
 FermentaLab is designed around **local operation and operator control**. Neither development nor production requires granting remote access to a coding assistant. Review changes before execution, preserve the existing architecture and engineering requirements, and do not commit unrelated files.
@@ -187,4 +234,4 @@ For development changes, use focused tests plus full qualification, clearly dist
 
 ## Licence
 
-Consult the repository's actual licence file and accompanying notices for reuse terms. This README intentionally does not invent a licence or grant permissions that have not been established in the repository.
+The licence has **not been verified** from a repository licence file in the materials reviewed for this revision. Check the actual root `LICENSE`/`COPYING` file and applicable notices before reuse or redistribution. This README does not grant rights or assume a licence.
