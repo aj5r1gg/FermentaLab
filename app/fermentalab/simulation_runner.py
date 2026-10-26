@@ -26,8 +26,36 @@ from fermentalab.fermentation_runtime import (
     RuntimeState,
 )
 from fermentalab.recipes import Recipe
-from fermentalab.sensors import SimulatedChamberTemperatureSensor
+from fermentalab.sensors import (
+    ChamberTemperatureReading,
+    SimulatedChamberTemperatureSensor,
+)
 from fermentalab.thermal_model import ThermalModel
+
+
+@dataclass(frozen=True)
+class SupplementarySensorConfig:
+    sensor_id: str
+    offset_c: float = 0.0
+
+    def __post_init__(self):
+        if (
+            not isinstance(self.sensor_id, str)
+            or not self.sensor_id.strip()
+            or self.sensor_id == 'chamber-primary'
+        ):
+            raise ValueError('invalid supplementary sensor_id')
+        if (
+            type(self.offset_c) not in (int, float)
+            or not isfinite(self.offset_c)
+        ):
+            raise ValueError('offset_c must be finite and numeric')
+
+
+@dataclass(frozen=True)
+class SupplementarySensorFailure:
+    sensor_id: str
+    error: str
 
 
 @dataclass(frozen=True)
@@ -53,6 +81,8 @@ class SimulationObservation:
     heating_permitted: bool
     cooling_permitted: bool
     state: RuntimeState
+    supplementary_readings: tuple[ChamberTemperatureReading, ...] = ()
+    supplementary_failures: tuple[SupplementarySensorFailure, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,6 +149,7 @@ class SimulationRunner:
         command_identity: CommandIdentity | None = None,
         observer=None,
         report_every_s: float = 900.0,
+        supplementary_chamber_sensors: tuple[SupplementarySensorConfig, ...] = (),
     ) -> SimulationResult:
 
         if coordinator is not None:
@@ -185,6 +216,17 @@ class SimulationRunner:
                 "report_every_s must be finite and positive"
             )
 
+        if not isinstance(supplementary_chamber_sensors, tuple):
+            raise TypeError('supplementary_chamber_sensors must be a tuple')
+        if not all(
+            isinstance(config, SupplementarySensorConfig)
+            for config in supplementary_chamber_sensors
+        ):
+            raise TypeError('invalid supplementary sensor configuration')
+        ids = [config.sensor_id for config in supplementary_chamber_sensors]
+        if len(ids) != len(set(ids)):
+            raise ValueError('duplicate supplementary sensor_id')
+
         runtime = (
             coordinator.runtime
             if coordinator is not None
@@ -198,6 +240,42 @@ class SimulationRunner:
         chamber_sensor = SimulatedChamberTemperatureSensor(
             "chamber-primary"
         )
+
+        supplementary_sensors = tuple(
+            (
+                SimulatedChamberTemperatureSensor(config.sensor_id),
+                config.offset_c,
+            )
+            for config in supplementary_chamber_sensors
+        )
+
+        def supplementary_measurements(now_s):
+            readings = []
+            failures = []
+
+            for sensor, offset in supplementary_sensors:
+                try:
+                    reading = sensor.read(
+                        temperature_c=plant.state.chamber_c + offset,
+                        measured_at_s=now_s,
+                    )
+                    if not isinstance(reading, ChamberTemperatureReading):
+                        raise ValueError('invalid supplementary reading type')
+                    if (
+                        reading.sensor_id != sensor.sensor_id
+                        or reading.measured_at_s != now_s
+                    ):
+                        raise ValueError('invalid supplementary reading identity or timestamp')
+                    readings.append(reading)
+                except (OSError, ValueError, TypeError) as exc:
+                    failures.append(
+                        SupplementarySensorFailure(
+                            sensor_id=sensor.sensor_id,
+                            error=f'{type(exc).__name__}: {exc}',
+                        )
+                    )
+
+            return tuple(readings), tuple(failures)
 
         duration_s = (
             self.recipe.total_duration_minutes * 60.0
@@ -302,6 +380,10 @@ class SimulationRunner:
                 ):
                     stage = decision.stage
 
+                    monitoring_readings, monitoring_failures = (
+                        supplementary_measurements(now_s)
+                    )
+
                     observer(
                         SimulationObservation(
                             elapsed_s=now_s,
@@ -321,6 +403,8 @@ class SimulationRunner:
                             heating_permitted=heating,
                             cooling_permitted=cooling,
                             state=decision.state,
+                            supplementary_readings=monitoring_readings,
+                            supplementary_failures=monitoring_failures,
                         )
                     )
 
@@ -409,6 +493,10 @@ class SimulationRunner:
                 )
 
             if observer is not None:
+                monitoring_readings, monitoring_failures = (
+                    supplementary_measurements(duration_s)
+                )
+
                 observer(
                     SimulationObservation(
                         elapsed_s=duration_s,
@@ -420,6 +508,8 @@ class SimulationRunner:
                         heating_permitted=False,
                         cooling_permitted=False,
                         state=completion.state,
+                        supplementary_readings=monitoring_readings,
+                        supplementary_failures=monitoring_failures,
                     )
                 )
 
