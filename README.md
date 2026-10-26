@@ -4,7 +4,7 @@
 
 FermentaLab is a single-chamber food-fermentation controller intended to use an existing compressor-driven bar refrigerator, supplementary heating, measured chamber conditions, and independent physical safety provisions. Development takes place on Ubuntu with Docker Compose; the intended appliance controller runs on Raspberry Pi/Linux.
 
-> **Development status (26 October 2026): software qualification only.** Local qualification was reported as **549 Python tests passing and Ruff passing**. GitHub Actions **FermentaLab Tests** also succeeded on `development-history` at commit **`ce741df`** ([run 40306025265](https://github.com/aj5r1gg/FermentaLab/actions/runs/40306025265)). The GitHub run verifies its Python regression job; it is **not** evidence of physical commissioning, calibrated sensors, safe actuator switching, electrical safety, or unattended food-production suitability. Reverify against each future commit.
+> **Development status (26 October 2026): software qualification only.** Local qualification was reported as **549 Python tests passing and Ruff passing**. GitHub Actions **FermentaLab Tests** succeeded on `development-history` at commit **`04ce178`** ([run 40307278692](https://github.com/aj5r1gg/FermentaLab/actions/runs/40307278692)). The GitHub run verifies its Python regression job; it is **not** evidence of physical commissioning, calibrated sensors, safe actuator switching, electrical safety, or unattended food-production suitability. These results are historical and commit-specific; this README revision itself has not yet been run through CI.
 
 ## Scope
 
@@ -145,7 +145,24 @@ Do not run hardware-dependent code in the development container on the assumptio
 | `research/upstream-commit.txt` | Pinned upstream source revision |
 | `.github/workflows/tests.yml` | GitHub Actions test workflow |
 
-Some exploratory controllers, comparisons, and diagnostics in the repository are **simulation-only** and must not be treated as approved hardware control implementations.
+Some exploratory controllers, comparisons, and diagnostics in the repository are **simulation-only** and must not be treated as approved hardware control implementations. Historical research material may differ between `main` and `development-history`; this README preserves the supplied Steps 35–43 results, but has not been checked against the entire `main` README.
+
+## Temperature-Control Research
+
+FermentaLab contains several **simulation-only** temperature-control implementations. The corrected Step 39 PI controller remains the **research benchmark**; subsequent controllers are experimental and have **not** been qualified as replacements for the normal hardware controller. The implemented `temperature_control.py` remains the established software temperature-demand path.
+
+| Development step | Purpose | Status |
+| --- | --- | --- |
+| 35–36 | Hysteresis, proportional and initial PI comparisons | Simulation research |
+| 37–39 | PI diagnostics and corrected integral authority | **Step 39 retained as benchmark** |
+| 40 | Thermal-mass sensitivity diagnostics | Reproducible simulation evidence |
+| 41 | Mass-aware prediction-gain experiment | Not accepted as replacement; inconsistent performance |
+| 42 | Finite-horizon predictive heating guard | Promising, experimental |
+| 43 | Predictive-control robustness comparisons | Weak-heater regression identified |
+
+In a six-hour simulated **42°C** incubation, the Step 42 predictive heating guard reduced the double-mass batch's **last-hour mean absolute error from 0.367°C (Step 39) to 0.010°C**, without delaying first entry into the **±0.2°C** band in that scenario. Under the weak-heater scenario, however, the same guard **worsened last-hour error from 0.058°C to 0.224°C** and failed to reach the target band within six hours.
+
+These are results of an **unvalidated thermal model with idealised actuators**, **not** demonstrated hardware precision. The predictive controller must not be made the default physical controller on the basis of these simulations. Proposed further research is to distinguish controller limitations from insufficient heater capacity and test predictive behaviour against additional model error and disturbances. This research does not supersede physical measurement and safety qualification.
 
 ## Engineering and safety boundaries
 
@@ -180,7 +197,7 @@ The specifications establish requirements and acceptance obligations; README sum
 
 ## Current qualification and next milestones
 
-**Recorded results (26 October 2026):** 549 Python tests and Ruff passed locally. GitHub Actions run [40306025265](https://github.com/aj5r1gg/FermentaLab/actions/runs/40306025265) completed successfully on commit `ce741df` (`development-history`). The earlier CI run on `09c3ac5` failed at test discovery because the development image lacked Hypothesis; commit `ce741df` added that dependency. Each result is specific to its commit and environment. The GitHub workflow does not establish that local Ruff checks ran in CI.
+**Recorded results (26 October 2026):** 549 Python tests and Ruff passed locally. GitHub Actions run [40307278692](https://github.com/aj5r1gg/FermentaLab/actions/runs/40307278692) completed successfully on commit `04ce178` (`development-history`). The earlier CI run on `09c3ac5` failed at test discovery because the development image lacked Hypothesis; commit `ce741df` added that dependency. Each result is specific to its commit and environment. The GitHub workflow does not establish that local Ruff checks ran in CI.
 
 The practical next sequence is:
 
@@ -194,7 +211,7 @@ The milestone specification—not the mere presence of code or a passing CI badg
 
 ## Continuous integration
 
-The active **FermentaLab Tests** workflow is at `.github/workflows/tests.yml`. Its Python regression suite passed in [run 40306025265](https://github.com/aj5r1gg/FermentaLab/actions/runs/40306025265) on `development-history` (`ce741df`). The repository default branch is `main`; the recorded run was triggered using `workflow_dispatch`. Local `scripts/check.sh all` also runs Ruff and is a separate qualification path. **Review both results**: GitHub CI success is neither identical to full local qualification nor evidence of physical safety.
+The active **FermentaLab Tests** workflow is at `.github/workflows/tests.yml`. Its Python regression suite passed in [run 40307278692](https://github.com/aj5r1gg/FermentaLab/actions/runs/40307278692) on `development-history` (`04ce178`). The repository default branch is `main`; the recorded run was triggered using `workflow_dispatch`. Local `scripts/check.sh all` also runs Ruff and is a separate qualification path. **Review both results**: GitHub CI success is neither identical to full local qualification nor evidence of physical safety.
 
 With `gh` installed and authenticated, inspect or manually trigger the workflow:
 
