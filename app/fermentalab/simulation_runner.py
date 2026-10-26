@@ -35,6 +35,8 @@ from fermentalab.sensors import (
     SimulatedEnvironmentalSensor,
 )
 from fermentalab.thermal_model import ThermalModel
+from fermentalab.compressor_guard import CompressorGuard
+from fermentalab.compressor_command import execute_compressor_command
 
 
 @dataclass(frozen=True)
@@ -152,6 +154,7 @@ class SimulationRunner:
         coordinator: ExecutionCoordinator | None = None,
         command_admission: SimulatedCommandAdmission | None = None,
         command_identity: CommandIdentity | None = None,
+        compressor_guard: CompressorGuard | None = None,
         observer=None,
         report_every_s: float = 900.0,
         supplementary_chamber_sensors: tuple[SupplementarySensorConfig, ...] = (),
@@ -209,6 +212,22 @@ class SimulationRunner:
                 raise ValueError(
                     "Command identity is not the active "
                     "ownership and inhibition generation"
+                )
+
+        if compressor_guard is not None:
+            if not isinstance(compressor_guard, CompressorGuard):
+                raise TypeError(
+                    "compressor_guard must be CompressorGuard"
+                )
+
+            if command_admission is None:
+                raise ValueError(
+                    "compressor_guard requires command_admission"
+                )
+
+            if compressor_guard.used:
+                raise ValueError(
+                    "compressor_guard must be unused"
                 )
 
         if observer is not None and not callable(observer):
@@ -408,7 +427,20 @@ class SimulationRunner:
                 heating = decision.heating_permitted
                 cooling = decision.cooling_permitted
 
-                if command_admission is not None:
+                if compressor_guard is not None:
+                    result = execute_compressor_command(
+                        admission=command_admission,
+                        identity=command_identity,
+                        guard=compressor_guard,
+                        heating=heating,
+                        cooling=cooling,
+                        now_s=now_s,
+                    )
+
+                    heating = result.mode is CommandMode.HEATING
+                    cooling = result.mode is CommandMode.COOLING
+
+                elif command_admission is not None:
                     admitted = command_admission.admit(
                         identity=command_identity,
                         heating=heating,

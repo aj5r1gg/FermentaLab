@@ -39,6 +39,10 @@ class CompressorGuard:
         self._faulted = False
 
     @property
+    def used(self) -> bool:
+        return self._last_now_s is not None or self._faulted
+
+    @property
     def faulted(self) -> bool:
         return self._faulted
 
