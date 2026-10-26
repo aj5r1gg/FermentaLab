@@ -83,3 +83,71 @@ def open_ds18b20(*, hardware_id: str) -> DS18B20Reader:
         sensor_id=hardware_id,
         sensor=matching[0],
     )
+
+
+class DS18B20ChamberSensor:
+    """Adapt DS18B20 acquisition to FermentaLab's chamber reading.
+
+    This class supplies measurements, not control authority.
+    It does not establish calibration or sensor qualification.
+    """
+
+    def __init__(self, *, reader: DS18B20Reader, clock=None):
+        from time import monotonic
+
+        if not isinstance(reader, DS18B20Reader):
+            raise TypeError("reader must be DS18B20Reader")
+
+        if clock is None:
+            clock = monotonic
+
+        if not callable(clock):
+            raise TypeError("clock must be callable")
+
+        self._reader = reader
+        self._clock = clock
+        self._last_timestamp = None
+
+    @property
+    def sensor_id(self) -> str:
+        return self._reader.sensor_id
+
+    def read(self):
+        from fermentalab.sensors import ChamberTemperatureReading
+
+        # Acquire the measurement first. Timestamp it afterwards.
+        # A failed acquisition must never produce a valid reading.
+        temperature = self._reader.read_celsius()
+
+        try:
+            timestamp = self._clock()
+        except Exception as exc:
+            raise SensorReadError(
+                "DS18B20 measurement timestamp unavailable"
+            ) from exc
+
+        if (
+            type(timestamp) not in (int, float)
+            or not isfinite(timestamp)
+            or timestamp < 0
+        ):
+            raise SensorReadError(
+                "DS18B20 measurement timestamp invalid"
+            )
+
+        if (
+            self._last_timestamp is not None
+            and timestamp <= self._last_timestamp
+        ):
+            raise SensorReadError(
+                "DS18B20 measurement timestamp did not advance"
+            )
+
+        reading = ChamberTemperatureReading(
+            sensor_id=self.sensor_id,
+            temperature_c=temperature,
+            measured_at_s=float(timestamp),
+        )
+
+        self._last_timestamp = float(timestamp)
+        return reading
