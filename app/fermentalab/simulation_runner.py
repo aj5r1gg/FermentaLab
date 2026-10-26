@@ -26,6 +26,7 @@ from fermentalab.fermentation_runtime import (
     RuntimeState,
 )
 from fermentalab.recipes import Recipe
+from fermentalab.sensors import SimulatedChamberTemperatureSensor
 from fermentalab.thermal_model import ThermalModel
 
 
@@ -194,6 +195,10 @@ class SimulationRunner:
             initial_c=self.initial_c,
         )
 
+        chamber_sensor = SimulatedChamberTemperatureSensor(
+            "chamber-primary"
+        )
+
         duration_s = (
             self.recipe.total_duration_minutes * 60.0
         )
@@ -241,18 +246,23 @@ class SimulationRunner:
                         "ambient temperature must be finite"
                     )
 
+                reading = chamber_sensor.read(
+                    temperature_c=plant.state.chamber_c,
+                    measured_at_s=now_s,
+                )
+
                 if coordinator is None:
                     runtime.heartbeat(now_s=now_s)
 
                     decision = runtime.evaluate(
-                        chamber_c=plant.state.chamber_c,
-                        measured_at_s=now_s,
+                        chamber_c=reading.temperature_c,
+                        measured_at_s=reading.measured_at_s,
                         now_s=now_s,
                     )
                 else:
                     decision = coordinator.advance(
-                        chamber_c=plant.state.chamber_c,
-                        measured_at_s=now_s,
+                        chamber_c=reading.temperature_c,
+                        measured_at_s=reading.measured_at_s,
                         now_s=now_s,
                     )
 
@@ -365,18 +375,23 @@ class SimulationRunner:
                     )
                 )
 
+            final_reading = chamber_sensor.read(
+                temperature_c=plant.state.chamber_c,
+                measured_at_s=duration_s,
+            )
+
             if coordinator is None:
                 runtime.heartbeat(now_s=duration_s)
 
                 completion = runtime.evaluate(
-                    chamber_c=plant.state.chamber_c,
-                    measured_at_s=duration_s,
+                    chamber_c=final_reading.temperature_c,
+                    measured_at_s=final_reading.measured_at_s,
                     now_s=duration_s,
                 )
             else:
                 completion = coordinator.advance(
-                    chamber_c=plant.state.chamber_c,
-                    measured_at_s=duration_s,
+                    chamber_c=final_reading.temperature_c,
+                    measured_at_s=final_reading.measured_at_s,
                     now_s=duration_s,
                 )
 
